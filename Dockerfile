@@ -1,4 +1,5 @@
 # ── Stage 1: build ──────────────────────────────────────────────────────────
+# syntax=docker/dockerfile:1
 FROM node:20-alpine AS builder
 
 WORKDIR /app
