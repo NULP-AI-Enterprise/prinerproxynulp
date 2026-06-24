@@ -168,19 +168,38 @@ function errorFragment(msg: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Moonraker path matcher
+// Fluidd loads from the proxy origin and calls Moonraker at these standard
+// paths on the SAME origin. Every one must be forwarded to port 7125.
+// Reference: https://moonraker.readthedocs.io/en/latest/web_api/
+// ---------------------------------------------------------------------------
+const MOONRAKER_PREFIXES = [
+  "/websocket",       // Moonraker JSON-RPC WebSocket
+  "/api",             // Octoprint-compatible REST
+  "/server",          // Server management
+  "/access",          // API key / auth
+  "/machine",         // Machine / OS control
+  "/printer",         // Printer status & control
+  "/klippy_connection",
+];
+
+function isMoonrakerPath(url: string): boolean {
+  return MOONRAKER_PREFIXES.some(
+    (p) => url === p || url.startsWith(p + "/") || url.startsWith(p + "?")
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Proxied routes — all behind requireAuth
 // ---------------------------------------------------------------------------
 
-// Moonraker REST API & WebSocket endpoint.
-// Fluidd connects to /moonraker/* (configurable in Fluidd settings) OR directly
-// to the Moonraker host. We expose it on /moonraker so a single ingress suffices.
-app.use("/moonraker", requireAuth, (req, res) => {
-  // Strip the /moonraker prefix before forwarding
-  req.url = req.url.replace(/^\/moonraker/, "") || "/";
+// Standard Moonraker API paths — forwarded to port 7125 as-is
+app.use(MOONRAKER_PREFIXES, requireAuth, (req, res) => {
+  console.log(`[proxy → moonraker] ${req.method} ${req.url}`);
   moonrakerProxy.web(req, res);
 });
 
-// Everything else → Fluidd
+// Everything else (Fluidd static assets, SPA) → port 4409
 app.use("/", requireAuth, (req, res) => {
   fluiddProxy.web(req, res);
 });
@@ -192,33 +211,23 @@ const server = http.createServer(app);
 
 // ---------------------------------------------------------------------------
 // WebSocket upgrade handling
-// This is the critical piece: Express never sees WS upgrade requests, so we
-// must attach the handler directly to the underlying http.Server.
+// Express never sees Upgrade requests — attach directly to the raw server.
+// We gate on the signed connect.sid cookie (unforgeable without SESSION_SECRET).
 // ---------------------------------------------------------------------------
 server.on("upgrade", (req: http.IncomingMessage, socket: import("net").Socket, head: Buffer) => {
-  // Parse cookies manually to check the session cookie.
-  // express-session does not run for raw upgrade events, so we do a quick
-  // check: if the Cookie header contains the session cookie we allow the
-  // upgrade.  A proper implementation would verify the session store; for a
-  // single-node deployment the in-memory store is in the same process, but
-  // we cannot call req.session here.
-  //
-  // Strategy: allow WS upgrades only when a valid session cookie is present.
-  // The session middleware signs cookies, so an attacker cannot forge one
-  // without the SESSION_SECRET.
   const cookieHeader = req.headers.cookie ?? "";
 
-  // express-session default cookie name is "connect.sid"
   if (!cookieHeader.includes("connect.sid")) {
+    console.warn(`[ws] rejected unauthenticated upgrade: ${req.url}`);
     socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
     socket.destroy();
     return;
   }
 
   const url = req.url ?? "/";
+  console.log(`[ws] upgrade → ${isMoonrakerPath(url) ? "moonraker" : "fluidd"} : ${url}`);
 
-  if (url.startsWith("/moonraker")) {
-    req.url = url.replace(/^\/moonraker/, "") || "/";
+  if (isMoonrakerPath(url)) {
     moonrakerProxy.ws(req, socket, head);
   } else {
     fluiddProxy.ws(req, socket, head);
