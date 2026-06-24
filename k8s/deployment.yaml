@@ -30,7 +30,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: printer-proxy
-          image: ghcr.io/nulp-ai-enterprise/printer-proxy:sha-0e01f29
+          image: ghcr.io/nulp-ai-enterprise/printer-proxy:sha-07b921a
           imagePullPolicy: Always
           ports:
             - name: http
