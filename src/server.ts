@@ -22,10 +22,6 @@ function requireEnv(name: string, fallback?: string): string {
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 const IS_PROD = process.env.NODE_ENV === "production";
 
-// In production these MUST come from the Kubernetes Secret.
-// In dev they fall back to safe placeholder values so `npm run dev` works
-// without a .env file — but the placeholders are intentionally weak so you
-// notice immediately if a secret injection fails.
 const USERNAME       = requireEnv("AUTH_USERNAME",  IS_PROD ? undefined : "admin");
 const PASSWORD       = requireEnv("AUTH_PASSWORD",  IS_PROD ? undefined : "changeme");
 const SESSION_SECRET = requireEnv("SESSION_SECRET", IS_PROD ? undefined : "dev-secret-change-me");
@@ -33,6 +29,9 @@ const UPSTREAM_HOST = process.env.UPSTREAM_HOST ?? "192.168.1.177";
 const UPSTREAM_FLUIDD_PORT = parseInt(process.env.UPSTREAM_PORT ?? "4409", 10);
 const UPSTREAM_MOONRAKER_PORT = parseInt(process.env.MOONRAKER_PORT ?? "7125", 10);
 const TRUST_PROXY = process.env.TRUST_PROXY === "true";
+
+console.log(`[printer-proxy] auth username : "${USERNAME}"`);
+console.log(`[printer-proxy] trust proxy   : ${TRUST_PROXY}`);
 
 const FLUIDD_TARGET = `http://${UPSTREAM_HOST}:${UPSTREAM_FLUIDD_PORT}`;
 const MOONRAKER_TARGET = `http://${UPSTREAM_HOST}:${UPSTREAM_MOONRAKER_PORT}`;
@@ -95,7 +94,10 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      secure: TRUST_PROXY,   // true only when TLS is terminated upstream
+      // secure: false — TLS is terminated at Cloudflare, not at the pod.
+      // Setting this to true with HTTP-only ingress causes the browser to
+      // silently drop the cookie, making every request look unauthenticated.
+      secure: false,
       sameSite: "lax",
       maxAge: 8 * 60 * 60 * 1000, // 8 hours
     },
@@ -138,16 +140,18 @@ app.get("/login", (_req, res) => {
 app.post("/login", (req: Request, res: Response) => {
   const { username, password } = req.body as { username?: string; password?: string };
   const returnTo = typeof req.query.returnTo === "string" ? req.query.returnTo : "/";
+  const ip = req.ip ?? req.socket.remoteAddress;
 
   if (username === USERNAME && password === PASSWORD) {
+    console.log(`[printer-proxy] login OK  — user="${username}" ip=${ip}`);
     req.session.authenticated = true;
-    // Regenerate session id on privilege escalation (session fixation prevention)
     req.session.regenerate((err) => {
       if (err) console.error("session regenerate error:", err);
       req.session.authenticated = true;
       res.redirect(returnTo.startsWith("/") ? returnTo : "/");
     });
   } else {
+    console.warn(`[printer-proxy] login FAIL — user="${username}" ip=${ip} (wrong credentials)`);
     res.status(401).setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(LOGIN_HTML.replace("<!--ERROR-->", errorFragment("Invalid credentials")));
   }
