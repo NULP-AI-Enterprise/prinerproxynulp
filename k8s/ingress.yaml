@@ -1,0 +1,47 @@
+# Works with both Traefik (k3s default) and ingress-nginx.
+# For Traefik: the websocket upgrade is supported by default.
+# For Nginx:   the two annotations below are required for WS proxying.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: printer-proxy
+  namespace: printer-proxy
+  annotations:
+    # ── Traefik ──────────────────────────────────────────────────────
+    traefik.ingress.kubernetes.io/router.entrypoints: web,websecure
+    # Sticky sessions so WS upgrade + session cookie land on the same pod
+    # (only needed if replicas > 1)
+    traefik.ingress.kubernetes.io/service.sticky.cookie: "true"
+    traefik.ingress.kubernetes.io/service.sticky.cookie.name: "printer-proxy-lb"
+
+    # ── Nginx (uncomment if using ingress-nginx instead) ─────────────
+    # nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    # nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    # nginx.ingress.kubernetes.io/configuration-snippet: |
+    #   proxy_set_header Upgrade $http_upgrade;
+    #   proxy_set_header Connection "upgrade";
+
+    # ── TLS via cert-manager (optional but recommended) ───────────────
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  # Uncomment one ingressClassName depending on your controller:
+  ingressClassName: traefik
+  # ingressClassName: nginx
+
+  # ── TLS (uncomment and adjust when cert-manager is installed) ─────
+  # tls:
+  #   - hosts:
+  #       - printer.yourdomain.local
+  #     secretName: printer-proxy-tls
+
+  rules:
+    - host: printer.yourdomain.local   # <-- change to your hostname or local DNS
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: printer-proxy
+                port:
+                  name: http

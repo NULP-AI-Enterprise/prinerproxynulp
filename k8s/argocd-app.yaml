@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: printer-proxy
+  namespace: argocd           # Argo CD's own namespace
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io   # cascade-delete on app removal
+spec:
+  project: default
+
+  source:
+    repoURL: https://github.com/YOUR_GITHUB_USER/prinerproxynulp.git  # <-- update
+    targetRevision: main
+    path: k8s          # directory inside the repo that contains the manifests
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: printer-proxy
+
+  syncPolicy:
+    automated:
+      prune: true        # delete resources removed from Git
+      selfHeal: true     # revert manual kubectl edits
+    syncOptions:
+      - CreateNamespace=true   # auto-create namespace if missing
+      - PrunePropagationPolicy=foreground
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff:
+        duration: 5s
+        factor: 2
+        maxDuration: 3m
+
+  # Ignore the secret.yaml diffs (managed out-of-band or via Sealed Secrets)
+  ignoreDifferences:
+    - group: ""
+      kind: Secret
+      name: printer-proxy-secret
+      jsonPointers:
+        - /data

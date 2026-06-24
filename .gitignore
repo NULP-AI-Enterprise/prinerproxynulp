@@ -141,3 +141,10 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# Compiled output
+dist/
+
+# Raw plaintext Kubernetes Secret — local use only, sealed before committing
+k8s/secret.yaml
+# sealed-secret.yaml is intentionally NOT ignored — encrypted values are safe to commit

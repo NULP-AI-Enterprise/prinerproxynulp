@@ -1,0 +1,99 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: printer-proxy
+  namespace: printer-proxy
+  labels:
+    app: printer-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: printer-proxy
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: printer-proxy
+      annotations:
+        # Force rollout when the secret changes (Reloader-style manual annotation)
+        checksum/secret: "update-this-on-secret-change"
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: printer-proxy
+          image: ghcr.io/YOUR_GITHUB_USER/printer-proxy:latest   # <-- update to your registry
+          imagePullPolicy: Always
+          ports:
+            - name: http
+              containerPort: 3000
+              protocol: TCP
+          env:
+            - name: PORT
+              value: "3000"
+            - name: NODE_ENV
+              value: "production"
+            - name: TRUST_PROXY
+              value: "true"
+            - name: UPSTREAM_HOST
+              value: "192.168.1.177"
+            - name: UPSTREAM_PORT
+              value: "4409"
+            - name: MOONRAKER_PORT
+              value: "7125"
+            # Secrets injected from the SealedSecret → decrypted Secret
+            - name: AUTH_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: printer-proxy-secret
+                  key: AUTH_USERNAME
+            - name: AUTH_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: printer-proxy-secret
+                  key: AUTH_PASSWORD
+            - name: SESSION_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: printer-proxy-secret
+                  key: SESSION_SECRET
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "128Mi"
+          livenessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /login
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+      restartPolicy: Always

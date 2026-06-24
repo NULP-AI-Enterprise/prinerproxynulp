@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: printer-proxy
+  namespace: printer-proxy
+  labels:
+    app: printer-proxy
+spec:
+  type: ClusterIP
+  selector:
+    app: printer-proxy
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

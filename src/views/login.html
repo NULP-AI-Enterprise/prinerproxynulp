@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Printer Access</title>
+  <style>
+    /* ── Reset & base ─────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --clr-bg-1:   #0a0c10;
+      --clr-bg-2:   #0f1318;
+      --clr-glass:  rgba(255, 255, 255, 0.055);
+      --clr-border: rgba(255, 255, 255, 0.10);
+      --clr-accent: #7c9eff;
+      --clr-accent2:#5b7fe8;
+      --clr-text:   #e2e8f0;
+      --clr-muted:  #94a3b8;
+      --clr-error:  #f87171;
+      --radius:     16px;
+      --font:       'Inter', system-ui, -apple-system, sans-serif;
+    }
+
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap');
+
+    html, body {
+      height: 100%;
+      background-color: var(--clr-bg-1);
+      color: var(--clr-text);
+      font-family: var(--font);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Animated background grid ────────────────────────────────── */
+    body {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background:
+        radial-gradient(ellipse 80% 60% at 20% 30%, rgba(124, 158, 255, 0.12) 0%, transparent 70%),
+        radial-gradient(ellipse 60% 50% at 80% 70%, rgba(91, 127, 232, 0.09) 0%, transparent 70%),
+        var(--clr-bg-1);
+      overflow: hidden;
+    }
+
+    body::before {
+      content: '';
+      position: fixed;
+      inset: 0;
+      background-image:
+        linear-gradient(rgba(255,255,255,.025) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,.025) 1px, transparent 1px);
+      background-size: 44px 44px;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── Card ─────────────────────────────────────────────────────── */
+    .card {
+      position: relative;
+      z-index: 1;
+      width: min(420px, calc(100vw - 32px));
+      background: var(--clr-glass);
+      backdrop-filter: blur(24px) saturate(160%);
+      -webkit-backdrop-filter: blur(24px) saturate(160%);
+      border: 1px solid var(--clr-border);
+      border-radius: var(--radius);
+      padding: 40px 36px 36px;
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,.04) inset,
+        0 24px 64px rgba(0, 0, 0, 0.55),
+        0 4px 16px rgba(0, 0, 0, 0.35);
+    }
+
+    /* top accent bar */
+    .card::before {
+      content: '';
+      position: absolute;
+      top: 0; left: 20px; right: 20px;
+      height: 1px;
+      background: linear-gradient(90deg, transparent, var(--clr-accent), transparent);
+      border-radius: 0 0 4px 4px;
+    }
+
+    /* ── Header ───────────────────────────────────────────────────── */
+    .logo-wrap {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 28px;
+    }
+
+    .logo-icon {
+      width: 40px; height: 40px;
+      background: linear-gradient(135deg, var(--clr-accent), var(--clr-accent2));
+      border-radius: 10px;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 4px 14px rgba(124, 158, 255, 0.35);
+      flex-shrink: 0;
+    }
+
+    .logo-icon svg { width: 22px; height: 22px; fill: #fff; }
+
+    .logo-text h1 {
+      font-size: 1rem;
+      font-weight: 600;
+      letter-spacing: .01em;
+      line-height: 1.2;
+    }
+
+    .logo-text p {
+      font-size: .72rem;
+      color: var(--clr-muted);
+      font-weight: 400;
+      margin-top: 1px;
+      letter-spacing: .03em;
+      text-transform: uppercase;
+    }
+
+    /* ── Form ─────────────────────────────────────────────────────── */
+    .form-group {
+      margin-bottom: 16px;
+    }
+
+    label {
+      display: block;
+      font-size: .75rem;
+      font-weight: 500;
+      color: var(--clr-muted);
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      margin-bottom: 6px;
+    }
+
+    input[type="text"],
+    input[type="password"] {
+      width: 100%;
+      padding: 11px 14px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--clr-border);
+      border-radius: 10px;
+      color: var(--clr-text);
+      font-family: var(--font);
+      font-size: .9rem;
+      outline: none;
+      transition: border-color .18s, background .18s, box-shadow .18s;
+    }
+
+    input[type="text"]:focus,
+    input[type="password"]:focus {
+      border-color: var(--clr-accent);
+      background: rgba(124, 158, 255, 0.05);
+      box-shadow: 0 0 0 3px rgba(124, 158, 255, 0.12);
+    }
+
+    input::placeholder { color: rgba(148, 163, 184, 0.45); }
+
+    /* ── Password toggle ──────────────────────────────────────────── */
+    .pw-wrap { position: relative; }
+
+    .pw-toggle {
+      position: absolute;
+      right: 12px; top: 50%;
+      transform: translateY(-50%);
+      background: none; border: none; cursor: pointer;
+      color: var(--clr-muted);
+      padding: 4px;
+      display: flex; align-items: center;
+      transition: color .15s;
+    }
+    .pw-toggle:hover { color: var(--clr-accent); }
+    .pw-toggle svg { width: 16px; height: 16px; }
+
+    /* ── Error message ────────────────────────────────────────────── */
+    .error-msg {
+      background: rgba(248, 113, 113, 0.10);
+      border: 1px solid rgba(248, 113, 113, 0.28);
+      color: var(--clr-error);
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: .82rem;
+      margin-bottom: 16px;
+    }
+
+    /* ── Submit button ────────────────────────────────────────────── */
+    .btn-submit {
+      width: 100%;
+      margin-top: 8px;
+      padding: 12px;
+      background: linear-gradient(135deg, var(--clr-accent), var(--clr-accent2));
+      border: none;
+      border-radius: 10px;
+      color: #fff;
+      font-family: var(--font);
+      font-size: .9rem;
+      font-weight: 600;
+      letter-spacing: .02em;
+      cursor: pointer;
+      transition: opacity .18s, transform .12s, box-shadow .18s;
+      box-shadow: 0 4px 18px rgba(124, 158, 255, 0.30);
+    }
+
+    .btn-submit:hover  { opacity: .9; box-shadow: 0 6px 22px rgba(124, 158, 255, 0.42); }
+    .btn-submit:active { transform: scale(.98); }
+
+    /* ── Footer ───────────────────────────────────────────────────── */
+    .card-footer {
+      margin-top: 24px;
+      text-align: center;
+      font-size: .72rem;
+      color: rgba(148, 163, 184, 0.40);
+      letter-spacing: .04em;
+    }
+  </style>
+</head>
+<body>
+  <div class="card" role="main">
+
+    <div class="logo-wrap" aria-hidden="true">
+      <div class="logo-icon">
+        <!-- 3D-printer nozzle icon -->
+        <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+          <path d="M7 2h10l2 6H5L7 2zm-2 7h14v2a7 7 0 0 1-7 7 7 7 0 0 1-7-7V9zm7 7v4m0 0H9m3 0h3"/>
+        </svg>
+      </div>
+      <div class="logo-text">
+        <h1>Printer Control</h1>
+        <p>Secure Access Portal</p>
+      </div>
+    </div>
+
+    <!--ERROR-->
+
+    <form method="POST" action="/login" autocomplete="on" novalidate>
+      <input type="hidden" name="_csrf" value="" />
+
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input
+          id="username"
+          type="text"
+          name="username"
+          placeholder="Enter username"
+          autocomplete="username"
+          required
+          autofocus
+        />
+      </div>
+
+      <div class="form-group">
+        <label for="password">Password</label>
+        <div class="pw-wrap">
+          <input
+            id="password"
+            type="password"
+            name="password"
+            placeholder="Enter password"
+            autocomplete="current-password"
+            required
+          />
+          <button type="button" class="pw-toggle" aria-label="Toggle password visibility" onclick="togglePw()">
+            <svg id="eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <button type="submit" class="btn-submit">Authenticate</button>
+    </form>
+
+    <div class="card-footer">Klipper · Fluidd · Moonraker</div>
+  </div>
+
+  <script>
+    function togglePw() {
+      const inp = document.getElementById('password');
+      const icon = document.getElementById('eye-icon');
+      if (inp.type === 'password') {
+        inp.type = 'text';
+        icon.innerHTML = '<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/><path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/><line x1="1" y1="1" x2="23" y2="23"/>';
+        icon.setAttribute('fill','none');
+        icon.setAttribute('stroke','currentColor');
+        icon.setAttribute('stroke-width','2');
+      } else {
+        inp.type = 'password';
+        icon.innerHTML = '<path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/>';
+      }
+    }
+  </script>
+</body>
+</html>
