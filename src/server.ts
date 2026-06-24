@@ -58,16 +58,29 @@ function makeProxy(target: string, label: string) {
   p.on("error", (err: NodeJS.ErrnoException, req: http.IncomingMessage, resOrSocket) => {
     const code = err.code ?? err.message;
     console.error(`[${label} error] ${req.url} — ${code}`);
-
     if (resOrSocket instanceof http.ServerResponse) {
       if (!resOrSocket.headersSent) {
         resOrSocket.writeHead(502, { "Content-Type": "text/plain" });
         resOrSocket.end(`Bad Gateway — ${label} unreachable (${code})`);
       }
     } else if (resOrSocket instanceof net.Socket) {
-      // WebSocket socket — must be destroyed on error or it hangs forever
       resOrSocket.destroy();
     }
+  });
+
+  // Fires when the upstream WebSocket request is sent — confirms TCP opened
+  p.on("proxyReqWs", (_proxyReq, req) => {
+    console.log(`[${label}] proxyReqWs sent  → ${target}${req.url}`);
+  });
+
+  // Fires when the upstream WebSocket connection is established (101 received)
+  p.on("open", (_proxySocket) => {
+    console.log(`[${label}] upstream ws open ✓`);
+  });
+
+  // Fires when either side closes the WebSocket
+  p.on("close", (_res, _socket, _head) => {
+    console.log(`[${label}] ws closed`);
   });
 
   return p;
