@@ -1,4 +1,5 @@
 import http from "http";
+import net from "net";
 import path from "path";
 import fs from "fs";
 
@@ -18,42 +19,62 @@ function requireEnv(name: string, fallback?: string): string {
   return val;
 }
 
-const PORT         = parseInt(process.env.PORT ?? "3000", 10);
-const IS_PROD      = process.env.NODE_ENV === "production";
-const USERNAME     = requireEnv("AUTH_USERNAME",  IS_PROD ? undefined : "admin");
-const PASSWORD     = requireEnv("AUTH_PASSWORD",  IS_PROD ? undefined : "changeme");
+const PORT           = parseInt(process.env.PORT ?? "3000", 10);
+const IS_PROD        = process.env.NODE_ENV === "production";
+const USERNAME       = requireEnv("AUTH_USERNAME",  IS_PROD ? undefined : "admin");
+const PASSWORD       = requireEnv("AUTH_PASSWORD",  IS_PROD ? undefined : "changeme");
 const SESSION_SECRET = requireEnv("SESSION_SECRET", IS_PROD ? undefined : "dev-secret-change-me");
-const TRUST_PROXY  = process.env.TRUST_PROXY === "true";
+const TRUST_PROXY    = process.env.TRUST_PROXY === "true";
 
-// Single upstream — Fluidd at port 4409 already handles everything
-// (static UI + internal Moonraker proxying). We do not need a separate
-// Moonraker port; routing all traffic here is correct.
-const UPSTREAM_HOST = process.env.UPSTREAM_HOST ?? "192.168.1.177";
-const UPSTREAM_PORT = parseInt(process.env.UPSTREAM_PORT ?? "4409", 10);
-const UPSTREAM      = `http://${UPSTREAM_HOST}:${UPSTREAM_PORT}`;
+const UPSTREAM_HOST      = process.env.UPSTREAM_HOST ?? "192.168.1.177";
+const UPSTREAM_HTTP_PORT = parseInt(process.env.UPSTREAM_PORT    ?? "4409", 10);
+const UPSTREAM_WS_PORT   = parseInt(process.env.MOONRAKER_PORT   ?? "7125", 10);
+
+// HTTP traffic (Mainsail/Fluidd static + REST API) → port 4409
+const HTTP_TARGET = `http://${UPSTREAM_HOST}:${UPSTREAM_HTTP_PORT}`;
+// WebSocket traffic (Moonraker JSON-RPC) → port 7125 directly.
+// Port 4409 Nginx does proxy /websocket to localhost:7125 internally, but
+// that double-hop through our proxy → Nginx → Moonraker does not survive.
+// Going straight to Moonraker avoids the issue entirely.
+const WS_TARGET   = `http://${UPSTREAM_HOST}:${UPSTREAM_WS_PORT}`;
 
 console.log(`[printer-proxy] auth username : "${USERNAME}"`);
-console.log(`[printer-proxy] upstream      : ${UPSTREAM}`);
+console.log(`[printer-proxy] http target   : ${HTTP_TARGET}`);
+console.log(`[printer-proxy] ws target     : ${WS_TARGET}`);
 console.log(`[printer-proxy] trust proxy   : ${TRUST_PROXY}`);
 
 // ---------------------------------------------------------------------------
-// Single proxy instance — handles both HTTP and WebSocket
+// Proxy helper — shared error handler factory
 // ---------------------------------------------------------------------------
-const proxy = httpProxy.createProxyServer({
-  target: UPSTREAM,
-  ws: true,
-  changeOrigin: true,
-  proxyTimeout: 0,
-  timeout: 0,
-});
+function makeProxy(target: string, label: string) {
+  const p = httpProxy.createProxyServer({
+    target,
+    ws: true,
+    changeOrigin: true,
+    proxyTimeout: 0,
+    timeout: 0,
+  });
 
-proxy.on("error", (err, _req, res) => {
-  console.error("[proxy error]", err.message);
-  if (res instanceof http.ServerResponse && !res.headersSent) {
-    res.writeHead(502, { "Content-Type": "text/plain" });
-    res.end("Bad Gateway — printer unreachable");
-  }
-});
+  p.on("error", (err: NodeJS.ErrnoException, req: http.IncomingMessage, resOrSocket) => {
+    const code = err.code ?? err.message;
+    console.error(`[${label} error] ${req.url} — ${code}`);
+
+    if (resOrSocket instanceof http.ServerResponse) {
+      if (!resOrSocket.headersSent) {
+        resOrSocket.writeHead(502, { "Content-Type": "text/plain" });
+        resOrSocket.end(`Bad Gateway — ${label} unreachable (${code})`);
+      }
+    } else if (resOrSocket instanceof net.Socket) {
+      // WebSocket socket — must be destroyed on error or it hangs forever
+      resOrSocket.destroy();
+    }
+  });
+
+  return p;
+}
+
+const httpProxy_ = makeProxy(HTTP_TARGET, "http");
+const wsProxy    = makeProxy(WS_TARGET,   "ws");
 
 // ---------------------------------------------------------------------------
 // Express app
@@ -72,9 +93,8 @@ app.use(
     saveUninitialized: false,
     cookie: {
       httpOnly: true,
-      // secure: false — TLS is terminated at Cloudflare, not at the pod.
-      // Setting this to true with HTTP-only ingress causes the browser to
-      // silently drop the cookie, making every request look unauthenticated.
+      // false — TLS is terminated at Cloudflare. Setting true causes the
+      // browser to drop the cookie on HTTP, creating an infinite login loop.
       secure: false,
       sameSite: "lax",
       maxAge: 8 * 60 * 60 * 1000, // 8 hours
@@ -97,7 +117,6 @@ function isAuthenticated(req: Request): boolean {
 
 function requireAuth(req: Request, res: Response, next: NextFunction): void {
   if (isAuthenticated(req)) return next();
-  // Preserve the originally-requested URL for post-login redirect
   const returnTo = encodeURIComponent(req.originalUrl);
   res.redirect(`/login?returnTo=${returnTo}`);
 }
@@ -129,16 +148,14 @@ app.post("/login", (req: Request, res: Response) => {
       res.redirect(returnTo.startsWith("/") ? returnTo : "/");
     });
   } else {
-    console.warn(`[printer-proxy] login FAIL — user="${username}" ip=${ip} (wrong credentials)`);
+    console.warn(`[printer-proxy] login FAIL — user="${username}" ip=${ip}`);
     res.status(401).setHeader("Content-Type", "text/html; charset=utf-8");
     res.send(LOGIN_HTML.replace("<!--ERROR-->", errorFragment("Invalid credentials")));
   }
 });
 
 app.post("/logout", (req: Request, res: Response) => {
-  req.session.destroy(() => {
-    res.redirect("/login");
-  });
+  req.session.destroy(() => res.redirect("/login"));
 });
 
 function errorFragment(msg: string): string {
@@ -146,34 +163,36 @@ function errorFragment(msg: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Proxied routes — everything behind requireAuth → single upstream
+// Proxied HTTP routes — all behind requireAuth → port 4409
 // ---------------------------------------------------------------------------
 app.use("/", requireAuth, (req, res) => {
-  proxy.web(req, res);
+  httpProxy_.web(req, res);
 });
 
 // ---------------------------------------------------------------------------
-// HTTP server — raw server required to intercept WebSocket upgrades
+// Raw HTTP server — required to intercept WebSocket Upgrade events
 // ---------------------------------------------------------------------------
 const server = http.createServer(app);
 
 // ---------------------------------------------------------------------------
-// WebSocket upgrade handling
-// Express never sees Upgrade requests — must attach to the raw http.Server.
-// Gate on the signed connect.sid cookie (unforgeable without SESSION_SECRET).
+// WebSocket upgrade handler
+// Express never sees Upgrade requests — must hook the raw http.Server.
+// Auth gate: connect.sid cookie is HMAC-signed; cannot be forged without
+// SESSION_SECRET. Full session store lookup not possible here without async.
 // ---------------------------------------------------------------------------
-server.on("upgrade", (req: http.IncomingMessage, socket: import("net").Socket, head: Buffer) => {
+server.on("upgrade", (req: http.IncomingMessage, socket: net.Socket, head: Buffer) => {
   const cookieHeader = req.headers.cookie ?? "";
 
   if (!cookieHeader.includes("connect.sid")) {
-    console.warn(`[ws] rejected unauthenticated upgrade: ${req.url}`);
-    socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    console.warn(`[ws] REJECTED unauthenticated upgrade: ${req.url}`);
+    socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
     socket.destroy();
     return;
   }
 
-  console.log(`[ws] upgrade: ${req.url}`);
-  proxy.ws(req, socket, head);
+  // All WebSocket traffic goes directly to Moonraker port 7125.
+  console.log(`[ws] upgrade → ${WS_TARGET}${req.url}`);
+  wsProxy.ws(req, socket, head);
 });
 
 // ---------------------------------------------------------------------------
@@ -181,10 +200,6 @@ server.on("upgrade", (req: http.IncomingMessage, socket: import("net").Socket, h
 // ---------------------------------------------------------------------------
 server.listen(PORT, () => {
   console.log(`[printer-proxy] listening on port ${PORT}`);
-  console.log(`[printer-proxy] upstream → ${UPSTREAM}`);
 });
 
-// Graceful shutdown
-process.on("SIGTERM", () => {
-  server.close(() => process.exit(0));
-});
+process.on("SIGTERM", () => server.close(() => process.exit(0)));
