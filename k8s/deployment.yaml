@@ -47,8 +47,6 @@ spec:
               value: "192.168.1.177"
             - name: UPSTREAM_PORT
               value: "4409"
-            - name: MOONRAKER_PORT
-              value: "7125"
             # Secrets injected from the SealedSecret → decrypted Secret
             - name: AUTH_USERNAME
               valueFrom:

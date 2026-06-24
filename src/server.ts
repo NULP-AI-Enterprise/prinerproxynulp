@@ -1,5 +1,4 @@
 import http from "http";
-import https from "https";
 import path from "path";
 import fs from "fs";
 
@@ -8,7 +7,7 @@ import session from "express-session";
 import httpProxy from "http-proxy";
 
 // ---------------------------------------------------------------------------
-// Config — fail fast in production if required secrets are absent
+// Config
 // ---------------------------------------------------------------------------
 function requireEnv(name: string, fallback?: string): string {
   const val = process.env[name] ?? fallback;
@@ -19,61 +18,40 @@ function requireEnv(name: string, fallback?: string): string {
   return val;
 }
 
-const PORT = parseInt(process.env.PORT ?? "3000", 10);
-const IS_PROD = process.env.NODE_ENV === "production";
-
-const USERNAME       = requireEnv("AUTH_USERNAME",  IS_PROD ? undefined : "admin");
-const PASSWORD       = requireEnv("AUTH_PASSWORD",  IS_PROD ? undefined : "changeme");
+const PORT         = parseInt(process.env.PORT ?? "3000", 10);
+const IS_PROD      = process.env.NODE_ENV === "production";
+const USERNAME     = requireEnv("AUTH_USERNAME",  IS_PROD ? undefined : "admin");
+const PASSWORD     = requireEnv("AUTH_PASSWORD",  IS_PROD ? undefined : "changeme");
 const SESSION_SECRET = requireEnv("SESSION_SECRET", IS_PROD ? undefined : "dev-secret-change-me");
+const TRUST_PROXY  = process.env.TRUST_PROXY === "true";
+
+// Single upstream — Fluidd at port 4409 already handles everything
+// (static UI + internal Moonraker proxying). We do not need a separate
+// Moonraker port; routing all traffic here is correct.
 const UPSTREAM_HOST = process.env.UPSTREAM_HOST ?? "192.168.1.177";
-const UPSTREAM_FLUIDD_PORT = parseInt(process.env.UPSTREAM_PORT ?? "4409", 10);
-const UPSTREAM_MOONRAKER_PORT = parseInt(process.env.MOONRAKER_PORT ?? "7125", 10);
-const TRUST_PROXY = process.env.TRUST_PROXY === "true";
+const UPSTREAM_PORT = parseInt(process.env.UPSTREAM_PORT ?? "4409", 10);
+const UPSTREAM      = `http://${UPSTREAM_HOST}:${UPSTREAM_PORT}`;
 
 console.log(`[printer-proxy] auth username : "${USERNAME}"`);
+console.log(`[printer-proxy] upstream      : ${UPSTREAM}`);
 console.log(`[printer-proxy] trust proxy   : ${TRUST_PROXY}`);
 
-const FLUIDD_TARGET = `http://${UPSTREAM_HOST}:${UPSTREAM_FLUIDD_PORT}`;
-const MOONRAKER_TARGET = `http://${UPSTREAM_HOST}:${UPSTREAM_MOONRAKER_PORT}`;
-
 // ---------------------------------------------------------------------------
-// Proxy instances
+// Single proxy instance — handles both HTTP and WebSocket
 // ---------------------------------------------------------------------------
-
-// Main proxy for Fluidd UI (HTTP + WS)
-const fluiddProxy = httpProxy.createProxyServer({
-  target: FLUIDD_TARGET,
-  ws: true,
-  changeOrigin: true,
-  // Keep the connection alive; Fluidd polls aggressively
-  proxyTimeout: 0,
-  timeout: 0,
-});
-
-// Separate proxy for Moonraker JSON-RPC WebSocket / REST API
-const moonrakerProxy = httpProxy.createProxyServer({
-  target: MOONRAKER_TARGET,
+const proxy = httpProxy.createProxyServer({
+  target: UPSTREAM,
   ws: true,
   changeOrigin: true,
   proxyTimeout: 0,
   timeout: 0,
 });
 
-// Forward proxy errors as 502 so the browser shows a meaningful error
-// instead of hanging.
-fluiddProxy.on("error", (err, _req, res) => {
-  console.error("[fluidd proxy error]", err.message);
+proxy.on("error", (err, _req, res) => {
+  console.error("[proxy error]", err.message);
   if (res instanceof http.ServerResponse && !res.headersSent) {
     res.writeHead(502, { "Content-Type": "text/plain" });
-    res.end("Bad Gateway — upstream unreachable");
-  }
-});
-
-moonrakerProxy.on("error", (err, _req, res) => {
-  console.error("[moonraker proxy error]", err.message);
-  if (res instanceof http.ServerResponse && !res.headersSent) {
-    res.writeHead(502, { "Content-Type": "text/plain" });
-    res.end("Bad Gateway — Moonraker unreachable");
+    res.end("Bad Gateway — printer unreachable");
   }
 });
 
@@ -168,51 +146,21 @@ function errorFragment(msg: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Moonraker path matcher
-// Fluidd loads from the proxy origin and calls Moonraker at these standard
-// paths on the SAME origin. Every one must be forwarded to port 7125.
-// Reference: https://moonraker.readthedocs.io/en/latest/web_api/
+// Proxied routes — everything behind requireAuth → single upstream
 // ---------------------------------------------------------------------------
-const MOONRAKER_PREFIXES = [
-  "/websocket",       // Moonraker JSON-RPC WebSocket
-  "/api",             // Octoprint-compatible REST
-  "/server",          // Server management
-  "/access",          // API key / auth
-  "/machine",         // Machine / OS control
-  "/printer",         // Printer status & control
-  "/klippy_connection",
-];
-
-function isMoonrakerPath(url: string): boolean {
-  return MOONRAKER_PREFIXES.some(
-    (p) => url === p || url.startsWith(p + "/") || url.startsWith(p + "?")
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Proxied routes — all behind requireAuth
-// ---------------------------------------------------------------------------
-
-// Standard Moonraker API paths — forwarded to port 7125 as-is
-app.use(MOONRAKER_PREFIXES, requireAuth, (req, res) => {
-  console.log(`[proxy → moonraker] ${req.method} ${req.url}`);
-  moonrakerProxy.web(req, res);
-});
-
-// Everything else (Fluidd static assets, SPA) → port 4409
 app.use("/", requireAuth, (req, res) => {
-  fluiddProxy.web(req, res);
+  proxy.web(req, res);
 });
 
 // ---------------------------------------------------------------------------
-// HTTP server — must be a raw http.Server so we can intercept upgrades
+// HTTP server — raw server required to intercept WebSocket upgrades
 // ---------------------------------------------------------------------------
 const server = http.createServer(app);
 
 // ---------------------------------------------------------------------------
 // WebSocket upgrade handling
-// Express never sees Upgrade requests — attach directly to the raw server.
-// We gate on the signed connect.sid cookie (unforgeable without SESSION_SECRET).
+// Express never sees Upgrade requests — must attach to the raw http.Server.
+// Gate on the signed connect.sid cookie (unforgeable without SESSION_SECRET).
 // ---------------------------------------------------------------------------
 server.on("upgrade", (req: http.IncomingMessage, socket: import("net").Socket, head: Buffer) => {
   const cookieHeader = req.headers.cookie ?? "";
@@ -224,14 +172,8 @@ server.on("upgrade", (req: http.IncomingMessage, socket: import("net").Socket, h
     return;
   }
 
-  const url = req.url ?? "/";
-  console.log(`[ws] upgrade → ${isMoonrakerPath(url) ? "moonraker" : "fluidd"} : ${url}`);
-
-  if (isMoonrakerPath(url)) {
-    moonrakerProxy.ws(req, socket, head);
-  } else {
-    fluiddProxy.ws(req, socket, head);
-  }
+  console.log(`[ws] upgrade: ${req.url}`);
+  proxy.ws(req, socket, head);
 });
 
 // ---------------------------------------------------------------------------
@@ -239,8 +181,7 @@ server.on("upgrade", (req: http.IncomingMessage, socket: import("net").Socket, h
 // ---------------------------------------------------------------------------
 server.listen(PORT, () => {
   console.log(`[printer-proxy] listening on port ${PORT}`);
-  console.log(`[printer-proxy] upstream Fluidd  → ${FLUIDD_TARGET}`);
-  console.log(`[printer-proxy] upstream Moonraker → ${MOONRAKER_TARGET}`);
+  console.log(`[printer-proxy] upstream → ${UPSTREAM}`);
 });
 
 // Graceful shutdown
