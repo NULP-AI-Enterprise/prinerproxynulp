@@ -1,6 +1,8 @@
 name: Build & Push Docker Image
 
 on:
+  workflow_dispatch:   # manual "Run workflow" button in GitHub UI
+
   push:
     branches: [main]
     paths:
@@ -8,6 +10,7 @@ on:
       - "Dockerfile"
       - "package*.json"
       - "tsconfig.json"
+      - ".github/workflows/docker-build.yml"
 
 env:
   REGISTRY: ghcr.io
