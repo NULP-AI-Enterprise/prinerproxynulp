@@ -35,7 +35,7 @@ spec:
   #     secretName: printer-proxy-tls
 
   rules:
-    - host: printer.yourdomain.local   # <-- change to your hostname or local DNS
+    - host: printer.thesis-i.com
       http:
         paths:
           - path: /

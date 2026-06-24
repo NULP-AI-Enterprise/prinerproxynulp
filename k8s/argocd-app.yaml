@@ -9,7 +9,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/YOUR_GITHUB_USER/prinerproxynulp.git  # <-- update
+    repoURL: https://github.com/NULP-AI-Enterprise/prinerproxynulp.git
     targetRevision: main
     path: k8s          # directory inside the repo that contains the manifests
 
