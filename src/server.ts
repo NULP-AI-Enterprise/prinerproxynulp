@@ -68,8 +68,15 @@ function makeProxy(target: string, label: string) {
     }
   });
 
-  // Fires when the upstream WebSocket request is sent — confirms TCP opened
-  p.on("proxyReqWs", (_proxyReq, req) => {
+  // Strip Origin before forwarding — Moonraker rejects unknown origins via
+  // CORS. Our proxy is the auth gate; Moonraker does not need to validate it.
+  p.on("proxyReq", (proxyReq) => {
+    proxyReq.removeHeader("origin");
+    proxyReq.removeHeader("referer");
+  });
+
+  p.on("proxyReqWs", (proxyReq, req) => {
+    proxyReq.removeHeader("origin");
     console.log(`[${label}] proxyReqWs sent  → ${target}${req.url}`);
   });
 
